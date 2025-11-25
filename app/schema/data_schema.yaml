@@ -1,0 +1,28 @@
+# Data Schema v11 - Candidate Profile Structure
+# TODO: Define the complete schema with all fields, types, and database mappings
+
+# This is a placeholder. Update with actual schema definition.
+
+# Example structure:
+# fields:
+#   - name: full_name
+#     type: string
+#     required: true
+#     db_table: profiles
+#     db_column: full_name
+#     question: "What's your full name?"
+#     order: 1
+#
+#   - name: email
+#     type: email
+#     required: true
+#     db_table: profiles
+#     db_column: email
+#     question: "What's your email address?"
+#     order: 2
+
+version: "v11"
+description: "Candidate profile schema for Matcha AI"
+
+# TODO: Define complete field list
+fields: []

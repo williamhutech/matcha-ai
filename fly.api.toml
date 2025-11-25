@@ -1,0 +1,25 @@
+# fly.toml - Backend API configuration
+# Deploy with: fly deploy -c fly.api.toml
+
+app = "matcha-ai-api"
+primary_region = "sin"  # Singapore
+
+[build]
+  dockerfile = "Dockerfile.api"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  ENVIRONMENT = "production"
+  LOG_LEVEL = "INFO"

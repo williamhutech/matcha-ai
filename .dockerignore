@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Virtual environments
+.venv
+venv
+env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Tests
+tests/
+*.pdf
+*.docx
+*.doc
+
+# Build artifacts
+dist
+build
+*.egg-info
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Fly.io
+fly*.toml
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
