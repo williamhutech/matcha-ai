@@ -4,10 +4,8 @@ This module contains utility functions for:
 - Message format conversion
 - Input validation (file uploads, email)
 - Profile completeness checking
-- LLM invocation with timeout protection
 """
 
-import asyncio
 import logging
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -17,49 +15,9 @@ from app.constants import (
     MAX_FILE_SIZE_MB,
     REQUIRED_PROFILE_FIELDS,
     MIN_PROFILE_FIELDS_FOR_COMPLETENESS,
-    LLM_TIMEOUT_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# --- LLM Utilities ---
-
-class LLMTimeoutError(Exception):
-    """Raised when LLM call times out."""
-    pass
-
-
-async def invoke_with_timeout(
-    llm,
-    messages: list,
-    timeout_seconds: float | None = None,
-):
-    """
-    Invoke LLM with timeout protection.
-
-    Args:
-        llm: The LangChain LLM instance
-        messages: List of messages to send
-        timeout_seconds: Timeout in seconds (defaults to LLM_TIMEOUT_SECONDS)
-
-    Returns:
-        LLM response
-
-    Raises:
-        LLMTimeoutError: If the call times out
-    """
-    if timeout_seconds is None:
-        timeout_seconds = LLM_TIMEOUT_SECONDS
-
-    try:
-        return await asyncio.wait_for(
-            llm.ainvoke(messages),
-            timeout=timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        logger.error(f"LLM call timed out after {timeout_seconds}s")
-        raise LLMTimeoutError(f"Request timed out after {timeout_seconds} seconds")
 
 
 # --- Input Validation ---

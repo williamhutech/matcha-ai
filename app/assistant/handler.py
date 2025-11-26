@@ -1,4 +1,8 @@
-"""Main handler for incoming messages - the assistant's 'brain' entry point."""
+"""Main handler for incoming messages - the assistant's 'brain' entry point.
+
+This module handles WhatsApp messages by routing them to the supervisor agent
+with thread-based persistence for conversation continuity.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,6 @@ from typing import TYPE_CHECKING
 from langchain_core.messages import HumanMessage, AIMessage
 
 from app.assistant.supervisor import run_supervisor
-from app.assistant.parsing_state import ParsingStateManager
 
 if TYPE_CHECKING:
     from app.whatsapp import InternalMessage
@@ -16,24 +19,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # In-memory session storage for WhatsApp users
+# Profile data is stored here; conversation history is managed by LangGraph checkpointer
 # TODO: Replace with database persistence
 _user_sessions: dict[str, dict] = {}
 
 
 def get_user_session(phone_number: str) -> dict:
-    """Get or create a session for a user."""
+    """Get or create a session for a user.
+
+    Note: Conversation history is now managed by LangGraph's checkpointer
+    via thread_id. We only store profile_data and message list locally.
+    """
     if phone_number not in _user_sessions:
         _user_sessions[phone_number] = {
             "messages": [],
             "profile_data": {},
-            "parsing_state": ParsingStateManager(),
         }
     return _user_sessions[phone_number]
 
 
 async def handle_incoming_message(message: "InternalMessage") -> str:
-    """
-    Process an incoming message and return a reply.
+    """Process an incoming message and return a reply.
 
     This is the main entry point called by the WhatsApp webhook handler.
     It orchestrates the supervisor agent and returns a response.
@@ -48,22 +54,24 @@ async def handle_incoming_message(message: "InternalMessage") -> str:
         f"Processing message from {message.phone_number}, type: {message.message_type}"
     )
 
-    # Get user session
+    # Use phone number as thread_id for conversation persistence
+    thread_id = f"whatsapp_{message.phone_number}"
+
+    # Get user session for profile data
     session = get_user_session(message.phone_number)
     messages = session["messages"]
     profile_data = session["profile_data"]
-    parsing_state = session["parsing_state"]
 
     try:
         if message.message_type == "text" and message.text:
             # Add user message to history
             messages.append(HumanMessage(content=message.text))
 
-            # Run supervisor agent
+            # Run supervisor agent with thread_id for persistence
             result = await run_supervisor(
                 messages=messages,
                 profile_data=profile_data,
-                parsing_state=parsing_state,
+                thread_id=thread_id,
             )
 
             # Update session with results

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     langchain_api_key: str | None = None
     langchain_project: str = "matcha-ai"
 
+    # Message management (for LangGraph agent)
+    max_context_tokens: int = 30000  # Conservative limit for gpt-4o-mini (128k context)
+    message_trim_strategy: str = "last"  # Keep most recent messages when trimming
+
 
 # Global settings instance
 settings = Settings()

@@ -1,7 +1,8 @@
 """REST API routes for Matcha AI backend.
 
 These endpoints are called by the Chainlit frontend and can also be used
-for other integrations.
+for other integrations. Thread IDs are used for conversation persistence
+via LangGraph's checkpointer.
 """
 
 import logging
@@ -12,21 +13,9 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
 from app.assistant.supervisor import run_supervisor
-from app.assistant.parsing_state import ParsingStateManager
 from app.constants import SUPPORTED_MIME_TYPES, MAX_MESSAGE_LENGTH, MAX_FILE_SIZE_MB
 
 logger = logging.getLogger(__name__)
-
-# Session storage for parsing state per user
-# TODO: Replace with database/Redis persistence
-_user_parsing_states: dict[str, ParsingStateManager] = {}
-
-
-def get_parsing_state(user_id: str) -> ParsingStateManager:
-    """Get or create parsing state for a user."""
-    if user_id not in _user_parsing_states:
-        _user_parsing_states[user_id] = ParsingStateManager()
-    return _user_parsing_states[user_id]
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -56,8 +45,10 @@ class ParseCVResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Process a chat message through the LangGraph flow.
+    """Process a chat message through the supervisor agent.
+
+    Uses thread_id based on user_id for conversation persistence
+    via LangGraph's checkpointer.
 
     Args:
         request: Chat request with message and context
@@ -74,6 +65,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
             detail=f"Message too long. Maximum {MAX_MESSAGE_LENGTH} characters."
         )
 
+    # Use user_id as thread_id for conversation persistence
+    thread_id = f"api_{request.user_id}"
+
     # Convert message history to LangChain format
     messages = []
     for msg in request.messages:
@@ -86,12 +80,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
     messages.append(HumanMessage(content=request.message))
 
     try:
-        parsing_state = get_parsing_state(request.user_id)
-
         result = await run_supervisor(
             messages=messages,
             profile_data=request.profile_data,
-            parsing_state=parsing_state,
+            thread_id=thread_id,
         )
 
         return ChatResponse(
@@ -111,8 +103,10 @@ async def parse_cv(
     user_id: str = Form(...),
     profile_data: str = Form("{}"),
 ) -> ParseCVResponse:
-    """
-    Parse an uploaded CV document.
+    """Parse an uploaded CV document.
+
+    Spawns background parsing via LangGraph subgraph while continuing
+    the conversation. Uses thread_id for persistence.
 
     Args:
         file: Uploaded CV file (PDF, DOC, DOCX)
@@ -131,6 +125,9 @@ async def parse_cv(
             detail=f"Unsupported file type: {file.content_type}. Please upload PDF, DOC, or DOCX."
         )
 
+    # Use user_id as thread_id for conversation persistence
+    thread_id = f"api_{user_id}"
+
     try:
         import json
         profile = json.loads(profile_data) if profile_data else {}
@@ -146,15 +143,13 @@ async def parse_cv(
                 detail=f"File too large. Maximum size is {MAX_FILE_SIZE_MB}MB."
             )
 
-        parsing_state = get_parsing_state(user_id)
-
         result = await run_supervisor(
             messages=[HumanMessage(content="I've uploaded my CV.")],
             profile_data=profile,
             document_content=content,
             document_filename=file.filename,
             document_mime=file.content_type,
-            parsing_state=parsing_state,
+            thread_id=thread_id,
         )
 
         return ParseCVResponse(
@@ -172,8 +167,7 @@ async def parse_cv(
 
 @router.get("/profile/{user_id}")
 async def get_profile(user_id: str) -> dict[str, Any]:
-    """
-    Get user profile data.
+    """Get user profile data.
 
     Args:
         user_id: User identifier
@@ -192,8 +186,7 @@ async def get_profile(user_id: str) -> dict[str, Any]:
 
 @router.post("/profile/{user_id}")
 async def update_profile(user_id: str, profile_data: dict) -> dict[str, Any]:
-    """
-    Update user profile data.
+    """Update user profile data.
 
     Args:
         user_id: User identifier

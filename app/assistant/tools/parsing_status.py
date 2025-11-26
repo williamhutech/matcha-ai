@@ -1,174 +1,162 @@
 """Tools for checking document parsing status.
 
-These tools allow the supervisor agent to poll the status of
-background parsing operations and apply results to the profile.
+Simplified for the new LangGraph subgraph pattern. Instead of interacting
+with a ParsingStateManager, these tools work with a simple results dict
+from the CV parsing subgraph.
 """
 
 import logging
 from langchain_core.tools import tool
 
-from app.assistant.parsing_state import ParsingStateManager, ParsingStatus
+from app.assistant.cv_parsing_graph import ParsingStatus
 
 logger = logging.getLogger(__name__)
 
 
-def create_parsing_status_tools(
-    state_manager: ParsingStateManager,
-    profile_data: dict,
+def create_parsing_tools(
+    parsing_results: dict | None,
+    parsing_in_progress: bool,
 ):
-    """
-    Create tools for checking and applying parsing results.
+    """Create tools for checking parsing status.
 
     Args:
-        state_manager: The session's parsing state manager
-        profile_data: Profile data dict (will be updated when applying results)
+        parsing_results: Results dict from CV parsing subgraph, containing:
+            - status: ParsingStatus enum value
+            - extracted_data: Dict of extracted profile fields
+            - error_message: Error string if failed
+            - document_filename: Original filename
+        parsing_in_progress: Whether parsing is currently running in background
 
     Returns:
         Tuple of tool functions
     """
 
     @tool
-    async def get_parsing_status() -> str:
-        """
-        Check the current status of document parsing.
+    def check_cv_parsing_status() -> str:
+        """Check the current status of CV/document parsing.
 
-        Use this tool to see if a CV/resume is still being parsed,
-        has completed, or has failed.
+        Use this to see if:
+        - Parsing is in progress (user uploaded a document)
+        - Parsing completed successfully (data ready to use)
+        - Parsing failed (may need to collect info manually)
 
         Returns:
-            Status summary of all parsing jobs.
+            Status summary with next steps.
         """
-        latest_job = await state_manager.get_latest_job()
-
-        if not latest_job:
-            return "No document has been uploaded for parsing."
-
-        status_info = []
-
-        if latest_job.status == ParsingStatus.PENDING:
-            status_info.append(
-                f"Document '{latest_job.filename}' is queued for parsing."
-            )
-        elif latest_job.status == ParsingStatus.IN_PROGRESS:
-            status_info.append(
-                f"Document '{latest_job.filename}' is being parsed... This may take a moment."
-            )
-        elif latest_job.status == ParsingStatus.RETRYING:
-            status_info.append(
-                f"Document '{latest_job.filename}' encountered an issue and is being retried (attempt {latest_job.attempt + 1})."
-            )
-        elif latest_job.status == ParsingStatus.COMPLETED:
-            fields_count = (
-                len(latest_job.extracted_data) if latest_job.extracted_data else 0
-            )
-            status_info.append(
-                f"Document '{latest_job.filename}' has been parsed successfully! Extracted {fields_count} fields."
-            )
-            status_info.append(
-                "Use apply_parsed_cv_data to add the extracted information to the profile."
-            )
-        elif latest_job.status == ParsingStatus.FAILED:
-            status_info.append(
-                f"Document '{latest_job.filename}' could not be parsed: {latest_job.error_message}"
-            )
-            status_info.append(
-                "You may need to ask the user for this information manually."
+        if parsing_in_progress:
+            return (
+                "CV parsing is currently in progress. "
+                "Continue the conversation and check again shortly."
             )
 
-        return "\n".join(status_info)
+        if not parsing_results:
+            return "No CV has been uploaded for parsing yet."
+
+        status = parsing_results.get("status")
+        filename = parsing_results.get("document_filename", "document")
+
+        if status == ParsingStatus.COMPLETED:
+            data = parsing_results.get("extracted_data", {})
+            # Count meaningful fields (exclude metadata)
+            fields = [
+                k for k in data.keys()
+                if k not in ["error", "raw_text", "confidence_scores", "missing_fields"]
+                and data[k] is not None
+            ]
+            return (
+                f"CV '{filename}' parsed successfully! "
+                f"Extracted {len(fields)} fields: {', '.join(fields[:8])}{'...' if len(fields) > 8 else ''}. "
+                f"This data has been applied to the profile."
+            )
+
+        elif status == ParsingStatus.FAILED:
+            error = parsing_results.get("error_message", "Unknown error")
+            return (
+                f"CV parsing failed for '{filename}': {error}. "
+                f"Please collect the user's information through conversation instead."
+            )
+
+        return f"Parsing status: {status}"
 
     @tool
-    async def apply_parsed_cv_data() -> str:
-        """
-        Apply the extracted CV data to the user's profile.
+    def is_cv_parsing_in_progress() -> str:
+        """Quick check if CV parsing is currently running.
 
-        Call this after get_parsing_status indicates parsing is complete.
-        This will merge the extracted data into the profile.
+        Use this at the start of each turn to decide whether to
+        check parsing status or continue normal conversation.
 
         Returns:
-            Summary of data applied to the profile.
+            'yes' or 'no' with brief context.
         """
-        latest_job = await state_manager.get_latest_job()
+        if parsing_in_progress:
+            filename = parsing_results.get("document_filename", "document") if parsing_results else "document"
+            return f"yes - '{filename}' is being parsed in the background"
 
-        if not latest_job:
-            return "No parsed document data available to apply."
+        if parsing_results:
+            status = parsing_results.get("status")
+            filename = parsing_results.get("document_filename", "document")
 
-        if latest_job.status != ParsingStatus.COMPLETED:
-            return f"Cannot apply data - parsing status is '{latest_job.status.value}'. Wait for parsing to complete."
+            if status == ParsingStatus.COMPLETED:
+                return f"no - parsing of '{filename}' completed, data has been applied"
+            elif status == ParsingStatus.FAILED:
+                return f"no - parsing of '{filename}' failed"
 
-        if not latest_job.extracted_data:
+        return "no - no active or recent parsing jobs"
+
+    @tool
+    def get_parsed_cv_data() -> str:
+        """Get a summary of data extracted from the uploaded CV.
+
+        Use this after parsing completes to see what information
+        was extracted and is now in the profile.
+
+        Returns:
+            Summary of extracted fields or status message.
+        """
+        if parsing_in_progress:
+            return "Parsing still in progress. Check again shortly."
+
+        if not parsing_results:
+            return "No CV has been parsed."
+
+        if parsing_results.get("status") != ParsingStatus.COMPLETED:
+            return f"Parsing not completed. Status: {parsing_results.get('status')}"
+
+        data = parsing_results.get("extracted_data", {})
+        if not data:
             return "Parsing completed but no data was extracted."
 
-        # Apply extracted data to profile
-        extracted = latest_job.extracted_data
-        applied_fields = []
+        # Build summary
+        summary_parts = ["Extracted CV data:"]
 
-        for field, value in extracted.items():
-            # Skip metadata fields
-            if field in ["confidence_scores", "missing_fields", "error", "raw_text"]:
-                continue
+        if data.get("name"):
+            summary_parts.append(f"- Name: {data['name']}")
+        if data.get("email"):
+            summary_parts.append(f"- Email: {data['email']}")
+        if data.get("phone"):
+            summary_parts.append(f"- Phone: {data['phone']}")
+        if data.get("location"):
+            summary_parts.append(f"- Location: {data['location']}")
+        if data.get("current_position"):
+            summary_parts.append(f"- Current position: {data['current_position']}")
 
-            if value is not None:
-                profile_data[field] = value
-                applied_fields.append(field)
+        if data.get("skills"):
+            skills = data["skills"]
+            if isinstance(skills, list):
+                summary_parts.append(f"- Skills: {len(skills)} found ({', '.join(skills[:5])}{'...' if len(skills) > 5 else ''})")
+            else:
+                summary_parts.append(f"- Skills: {skills}")
 
-        # Build response
-        response_parts = [f"Applied {len(applied_fields)} fields from CV to profile:"]
-
-        if profile_data.get("name"):
-            response_parts.append(f"- Name: {profile_data['name']}")
-        if profile_data.get("email"):
-            response_parts.append(f"- Email: {profile_data['email']}")
-        if profile_data.get("phone"):
-            response_parts.append(f"- Phone: {profile_data['phone']}")
-        if profile_data.get("location"):
-            response_parts.append(f"- Location: {profile_data['location']}")
-        if profile_data.get("skills"):
-            skills = profile_data["skills"]
-            count = len(skills) if isinstance(skills, list) else 1
-            response_parts.append(f"- Skills: {count} found")
-        if profile_data.get("work_experience"):
-            exp = profile_data["work_experience"]
+        if data.get("work_experience"):
+            exp = data["work_experience"]
             count = len(exp) if isinstance(exp, list) else 1
-            response_parts.append(f"- Work experience: {count} positions")
-        if profile_data.get("education"):
-            edu = profile_data["education"]
+            summary_parts.append(f"- Work experience: {count} position(s)")
+
+        if data.get("education"):
+            edu = data["education"]
             count = len(edu) if isinstance(edu, list) else 1
-            response_parts.append(f"- Education: {count} entries")
+            summary_parts.append(f"- Education: {count} entry/entries")
 
-        # Note missing fields
-        missing = extracted.get("missing_fields", [])
-        if missing:
-            response_parts.append(f"\nFields not found in CV: {', '.join(missing)}")
-            response_parts.append("Consider asking the user for this information.")
+        return "\n".join(summary_parts)
 
-        logger.info(f"Applied parsed CV data: {applied_fields}")
-        return "\n".join(response_parts)
-
-    @tool
-    async def is_cv_parsing_in_progress() -> str:
-        """
-        Quick check if CV parsing is currently running.
-
-        Use this at the start of each turn to see if you should
-        check parsing status or continue the conversation.
-
-        Returns:
-            'yes' if parsing is in progress, 'no' otherwise, plus brief context.
-        """
-        active_jobs = await state_manager.get_active_jobs()
-
-        if active_jobs:
-            job = active_jobs[0]
-            return f"yes - '{job.filename}' is being parsed (status: {job.status.value})"
-
-        # Check for completed but unapplied jobs
-        latest = await state_manager.get_latest_job()
-        if latest and latest.status == ParsingStatus.COMPLETED and latest.extracted_data:
-            return f"no - but '{latest.filename}' parsing completed and is ready to apply"
-        elif latest and latest.status == ParsingStatus.FAILED:
-            return f"no - '{latest.filename}' parsing failed: {latest.error_message}"
-
-        return "no - no active parsing jobs"
-
-    return get_parsing_status, apply_parsed_cv_data, is_cv_parsing_in_progress
+    return check_cv_parsing_status, is_cv_parsing_in_progress, get_parsed_cv_data
