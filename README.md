@@ -1,6 +1,6 @@
 # Matcha AI
 
-Job matching assistant powered by a ReAct supervisor agent. Helps job seekers create profiles through conversational AI via WhatsApp or web interface.
+Job matching assistant powered by LangGraph. Helps job seekers create profiles through conversational AI via WhatsApp or web interface.
 
 ## Architecture
 
@@ -17,6 +17,7 @@ Job matching assistant powered by a ReAct supervisor agent. Helps job seekers cr
 │          │                   │                   │                       │
 │          └───────────────────┼───────────────────┘                       │
 │                              ▼                                           │
+│                         thread_id                                        │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -25,40 +26,45 @@ Job matching assistant powered by a ReAct supervisor agent. Helps job seekers cr
 │                   app/assistant/supervisor.py                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   ReAct Agent Loop (max 5 iterations)                                    │
-│   ┌─────────┐    ┌─────────────┐    ┌─────────────┐                     │
-│   │  LLM    │ ─► │ Tool Calls? │ ─► │  Execute    │                     │
-│   │ Reason  │    │             │    │  Tools      │                     │
-│   └─────────┘    └──────┬──────┘    └──────┬──────┘                     │
-│        ▲                │ No               │                             │
-│        └────────────────┴──────────────────┘                             │
+│   LangGraph create_react_agent                                           │
+│   ┌─────────────────────────────────────────────────────────────┐       │
+│   │  MemorySaver Checkpointer (thread-based persistence)        │       │
+│   │  Token-based message trimming (tiktoken, 30k tokens)        │       │
+│   └─────────────────────────────────────────────────────────────┘       │
 │                                                                          │
 │   - Model: gpt-4o-mini                                                   │
-│   - Memory: Windowed (last 10 messages)                                  │
+│   - Persistence: InMemory (per session)                                  │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
-                              ▼
+               ┌──────────────┼──────────────┐
+               ▼              ▼              ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           TOOLS                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  PROFILE TOOLS              DOCUMENT TOOLS         Q&A TOOLS             │
+│  PROFILE TOOLS              PARSING STATUS         Q&A TOOLS             │
 │  ─────────────              ──────────────         ─────────             │
-│  get_profile()              parse_cv()             get_service_info()    │
-│  update_profile_field()     - Markitdown extract   - About, process      │
-│  get_missing_fields()       - LLM JSON parsing     - Privacy, help       │
-│  validate_profile()         - Auto profile update                        │
+│  get_profile()              check_cv_status()      get_service_info()    │
+│  update_profile_field()     get_parsed_cv_data()   - About, process      │
+│  get_missing_fields()       is_parsing_active()    - Privacy, help       │
+│  validate_profile()                                                      │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      CV PARSING CHAIN                                    │
-│                   app/documents/parsing.py                               │
+│                    CV PARSING SUBGRAPH                                   │
+│                app/assistant/cv_parsing_graph.py                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   Document → Markitdown → LLM Chain → JSON Profile                       │
+│   LangGraph StateGraph (runs in background)                              │
+│   ┌─────────┐    ┌─────────────┐    ┌─────────────┐                     │
+│   │  START  │ ─► │   parse     │ ─► │  should_    │                     │
+│   │         │    │  document   │    │  retry?     │                     │
+│   └─────────┘    └─────────────┘    └──────┬──────┘                     │
+│                        ▲                   │                             │
+│                        └───── wait_retry ──┘                             │
 │                                                                          │
 │   Supported: PDF, DOCX, DOC                                              │
 │   Output: name, email, work_experience, education, skills, etc.          │
@@ -70,22 +76,24 @@ Job matching assistant powered by a ReAct supervisor agent. Helps job seekers cr
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| **Supervisor** | ReAct Agent | Orchestrates conversation, decides which tools to call |
+| **Supervisor** | LangGraph Agent | `create_react_agent` with checkpointer for session persistence |
+| **CV Parser** | LangGraph Subgraph | Background document processing with retry logic |
 | **Profile Tools** | @tool functions | CRUD operations for user profile data |
-| **Document Tool** | @tool function | CV parsing and data extraction |
+| **Parsing Tools** | @tool functions | Check CV parsing status and results |
 | **Q&A Tool** | @tool function | Service information and FAQs |
-| **CV Chain** | LCEL Chain | Prompt → LLM → JSON Parser |
+| **Message Manager** | Module | Token-based trimming with tiktoken |
 
 ## Tech Stack
 
 - **Runtime**: Python 3.13
-- **Agent Framework**: LangChain 0.3 with ReAct pattern
+- **Agent Framework**: LangGraph 0.2 with `create_react_agent`
 - **LLM**: OpenAI gpt-4o-mini
+- **Token Counting**: tiktoken
 - **Document Processing**: Markitdown (PDF, DOCX)
 - **Web UI**: Chainlit 2.9
 - **API**: FastAPI
 - **Database**: Supabase (planned)
-- **Deployment**: Fly.io
+- **Deployment**: Fly.io (Singapore region)
 
 ## Quick Start
 
@@ -120,23 +128,26 @@ Open http://localhost:8000 to:
 ```
 app/
   assistant/
-    supervisor.py    # ReAct supervisor agent
-    handler.py       # WhatsApp message handler
-    prompts.py       # CV extraction prompt
+    supervisor.py          # LangGraph create_react_agent supervisor
+    cv_parsing_graph.py    # LangGraph subgraph for CV parsing
+    message_management.py  # Token-based message trimming
+    handler.py             # WhatsApp message handler
+    prompts.py             # System prompts
     tools/
-      profile.py     # Profile management tools
-      documents.py   # Document parsing tool
-      qa.py          # Service Q&A tool
+      __init__.py          # Tool factory (create_all_tools)
+      profile.py           # Profile management tools
+      parsing_status.py    # CV parsing status tools
+      qa.py                # Service Q&A tool
   documents/
-    parsing.py       # Markitdown + LLM extraction
+    parsing.py             # Markitdown + LLM extraction
   api/
-    routes.py        # REST API endpoints
+    routes.py              # REST API endpoints
   whatsapp/
-    webhook.py       # WhatsApp webhook handler
-  config.py          # Settings from .env
-  llm.py             # OpenAI client factory
-  utils.py           # Shared utilities
-chainlit_app.py      # Chainlit web UI
+    webhook.py             # WhatsApp webhook handler
+  config.py                # Settings from .env
+  constants.py             # Shared constants
+  utils.py                 # Shared utilities
+chainlit_app.py            # Chainlit web UI
 ```
 
 ## API Endpoints
@@ -153,11 +164,15 @@ chainlit_app.py      # Chainlit web UI
 
 ### Working
 - Chainlit web interface
-- ReAct supervisor agent with tool calling
+- LangGraph supervisor agent with `create_react_agent`
+- Session persistence via MemorySaver checkpointer
+- Token-based message trimming (prevents context overflow)
 - Profile management (get, update, validate)
-- CV parsing (PDF, DOCX) with structured extraction
+- CV parsing (PDF, DOCX) via LangGraph subgraph
+- Background document processing (non-blocking)
 - WhatsApp message handling
 - REST API
+- Deployed on Fly.io
 
 ### TODO
 - Database persistence (Supabase)
@@ -183,12 +198,20 @@ CV parsing benchmarks are in `/benchmarks/`:
 
 ### Fly.io
 
+Two separate apps for API and UI:
+
 ```bash
-fly auth login
-fly launch
-fly secrets set OPENAI_API_KEY=sk-...
-fly deploy
+# Deploy backend API
+fly deploy -c fly.api.toml
+fly secrets set OPENAI_API_KEY=sk-... -a matcha-ai-api
+
+# Deploy frontend UI
+fly deploy -c fly.ui.toml
 ```
+
+**Live URLs:**
+- UI: https://matcha-ai-ui.fly.dev
+- API: https://matcha-ai-api.fly.dev
 
 ## Environment Variables
 
